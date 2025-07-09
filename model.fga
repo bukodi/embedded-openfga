@@ -1,0 +1,12 @@
+model
+  schema 1.1
+
+type user
+type document
+   relations
+		define viewer: [user] or editor
+		define editor: [user]
+
+type app
+   relations
+		define admin: [user]

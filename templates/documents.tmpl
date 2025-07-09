@@ -1,0 +1,20 @@
+<html>
+<head><title>{{ .title }}</title></head>
+<body>
+    <h2>Documents</h2>
+    <ul>
+        {{ range .documents }}
+            <li>
+                {{ .name }} - <a href="/document/{{ .id }}/view">View</a> | <a href="/document/{{ .id }}/edit">Edit</a>
+            </li>
+        {{ else }}
+            <li>No documents found.</li>
+        {{ end }}
+        <li>
+            Custom Document - <input type="number" value="3" id="customDocID" placeholder="Enter Document ID"> <button onclick="location.href='/document/' + document.getElementById('customDocID').value + '/view'">View</button> | <button onclick="location.href='/document/' + document.getElementById('customDocID').value + '/edit'">Edit</button>
+        </li>
+    </ul>
+    <a href="/admin">Admin Panel</a><br/>
+    <a href="/login">Login With Different User</a>
+</body>
+</html>

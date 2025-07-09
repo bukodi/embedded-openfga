@@ -1,0 +1,26 @@
+services:
+  app:
+    image: app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATASTORE_URI: "postgres://postgres:pass123@postgres:5432/postgres"
+      INITIAL_TUPLES: |
+        [
+          {"object": "document:1", "relation": "editor", "user": "user:test@example.com"},
+          {"object": "document:2", "relation": "editor", "user": "user:test@example.com"},
+          {"object": "document:2", "relation": "viewer", "user": "user:another@example.com"},
+          {"object": "app:auth", "relation": "admin", "user": "user:test@example.com"}
+        ]
+    ports:
+      - "8007:8007"
+      - "9001:9001"
+    depends_on:
+      - postgres
+  postgres:
+    image: postgres:latest
+    environment:
+      POSTGRES_PASSWORD: pass123
+    ports:
+      - "5432:5432"

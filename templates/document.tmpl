@@ -1,0 +1,11 @@
+<html>
+<head><title>{{ .title }}</title></head>
+<body>
+    <h2>You are {{ .action }} document: {{ .docID }}</h2> <br/><hr/>
+    <p>{{ .user }} has access to this document.</p>
+    <a href="/document/{{ .docID }}/view">View Document</a><br/>
+    <a href="/document/{{ .docID }}/edit">Edit Document</a><br/>
+    <a href="/documents">Documents</a><br/>
+    <a href="/login">Login</a>
+</body>
+</html>
