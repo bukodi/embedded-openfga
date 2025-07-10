@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"github.com/go-playground/validator/v10"
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	parser "github.com/openfga/language/pkg/go/transformer"
@@ -38,12 +37,13 @@ type OpenFGAServer struct {
 	StoreName              string `validate:"required"`
 	StoreID                string
 	AuthorizationModelID   string
-	AuthorizationModelName string      `validate:"required"`
-	Logger                 *zap.Logger `validate:"required"`
-	InitialTuples          []Tuple     `validate:"min=1,dive,required"`
-	ModelFile              string      `validate:"required,file"`
-	dataStoreURI           string      `validate:"required,url"`
-	MaxEvaluationCost      int         `validate:"gte=0"` // This is a global setting, use wisely
+	AuthorizationModelName string        `validate:"required"`
+	Logger                 *zap.Logger   `validate:"required"`
+	InitialTuples          []Tuple       `validate:"min=1,dive,required"`
+	ModelFile              string        `validate:"required,file"`
+	dataStoreURI           string        `validate:"required,url"`
+	MaxEvaluationCost      int           `validate:"gte=0"` // This is a global setting, use wisely
+	CacheTTL               time.Duration `validate:"required"`
 }
 
 type OpenFGAOption func(*OpenFGAServer) error
@@ -108,10 +108,21 @@ func WithMaxEvaluationCost(cost int) OpenFGAOption {
 	}
 }
 
+func WithCacheTTL(ttl time.Duration) OpenFGAOption {
+	return func(fga *OpenFGAServer) error {
+		if ttl < 0 {
+			return errors.New("cache TTL must be greater than or equal to 0")
+		}
+		fga.CacheTTL = ttl
+		return nil
+	}
+}
+
 func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, error) {
 	fga := &OpenFGAServer{
 		dataStoreURI:      dataStoreURI,
-		MaxEvaluationCost: 100, // OpenFGA default max evaluation cost
+		MaxEvaluationCost: 100,              // OpenFGA default max evaluation cost
+		CacheTTL:          10 * time.Minute, // Default cache TTL
 	}
 	for _, opt := range opts {
 		if err := opt(fga); err != nil {
@@ -135,62 +146,59 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 		return nil, errors.Wrap(err, "failed to create PostgreSQL datastore")
 	}
 
-	maxWait := 5
-	waits := 0
+	timeout := time.After(30 * time.Second)
 	for {
-		r, e := pgConfig.IsReady(context.Background())
-		if e != nil {
-			return nil, errors.Wrap(e, "failed to check if PostgreSQL datastore is ready")
+		r, err := pgConfig.IsReady(context.Background())
+		if err != nil {
+			return nil, errors.Wrap(err, "error waiting for PostgreSQL datastore to be ready")
 		}
 		if r.IsReady {
+			fga.Logger.Debug("PostgreSQL datastore is ready")
 			break
-		} else {
-			fmt.Println("Waiting for PostgreSQL to be ready...", r.Message)
-			if strings.Contains(r.Message, "migrate") {
-				fmt.Println("Running migration...")
-				err := Migrate()
-				if err != nil {
-					return nil, errors.Wrap(err, "failed to run migration")
-				} else {
-					fmt.Println("Migration completed successfully")
-				}
-			}
-			time.Sleep(1 * time.Second)
-			waits++
-			if waits > maxWait {
-				return nil, errors.New("PostgreSQL is not ready after 5 seconds")
-			}
+		}
+		select {
+		case <-time.After(1 * time.Second):
+			fga.Logger.Debug("Waiting for PostgreSQL datastore to be ready...", zap.String("message", r.Message))
+		case <-timeout:
+			return nil, errors.New("timed out waiting for PostgreSQL datastore to be ready")
 		}
 	}
+	err = Migrate()
+	if err != nil {
+		fga.Logger.Error("Failed to run migration", zap.Error(err))
+		return nil, errors.Wrap(err, "failed to run migration")
+	} else {
+		fga.Logger.Info("Migration completed")
+	}
+
 	viper.Set("maxConditionEvaluationCost", fga.MaxEvaluationCost) // use this wisely, it is a global setting and can have performance implications for slower modelsl
 	// Initialize embedded OpenFGA
 	fgaServer, err := server.NewServerWithOpts(
 		server.WithDatastore(pgConfig),
 		server.WithLogger(&logger.ZapLogger{Logger: fga.Logger.With(zap.String("service", "authz"))}),
 		server.WithCacheControllerEnabled(true),
-		server.WithCacheControllerTTL(10*time.Minute),
+		server.WithCacheControllerTTL(fga.CacheTTL),
 		server.WithCheckQueryCacheEnabled(true),
-		server.WithCheckQueryCacheTTL(10*time.Minute),
+		server.WithCheckQueryCacheTTL(fga.CacheTTL),
 		server.WithCheckIteratorCacheEnabled(true),
-		server.WithContextPropagationToDatastore(true),
 		server.WithMaxChecksPerBatchCheck(5000),
 	)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to initialize OpenFGA server")
 	}
-	timeout := time.After(30 * time.Second)
+	timeout = time.After(30 * time.Second)
 	for {
 		isReady, err := fgaServer.IsReady(context.Background())
 		if err != nil {
 			return nil, errors.Wrap(err, "error checking OpenFGA server readiness")
 		}
 		if isReady {
-			fmt.Println("OpenFGA server is ready")
+			fga.Logger.Debug("OpenFGA server is ready")
 			break
 		}
 		select {
 		case <-time.After(1 * time.Second):
-			fmt.Println("OpenFGA server is not ready yet, retrying...")
+			fga.Logger.Debug("Waiting for OpenFGA server to be ready...")
 		case <-timeout:
 			return nil, errors.New("timed out waiting for OpenFGA server to be ready")
 		}
@@ -198,7 +206,7 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 
 	fga.Server = fgaServer
 
-	stores, err := fga.Server.ListStores(context.TODO(), &openfgav1.ListStoresRequest{Name: fga.StoreName})
+	stores, err := fga.Server.ListStores(context.Background(), &openfgav1.ListStoresRequest{Name: fga.StoreName})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to list stores")
 	}
@@ -253,7 +261,7 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 		fga.Logger.Debug("Authorization model found", zap.String("model_id", fga.AuthorizationModelID))
 	}
 
-	err = fga.Write(context.Background(), fga.InitialTuples)
+	err = fga.Write(context.Background(), fga.InitialTuples, true) // we ignore existing tuples
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to write tuples to OpenFGA")
 	}
@@ -274,7 +282,7 @@ func (fga *OpenFGAServer) Check(ctx context.Context, t Tuple) (bool, error) {
 	return v.GetAllowed(), nil
 }
 
-func (fga *OpenFGAServer) Write(ctx context.Context, t []Tuple) error {
+func (fga *OpenFGAServer) Write(ctx context.Context, t []Tuple, ignoreExisting bool) error {
 	if len(t) == 0 {
 		return errors.New("no tuples provided to write")
 	}
@@ -290,6 +298,10 @@ func (fga *OpenFGAServer) Write(ctx context.Context, t []Tuple) error {
 		},
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "already exists") && ignoreExisting { // if a batch write fails due to one exising pair the others won't be written, use this carefully
+			fga.Logger.Info("Tuple already exists, ignoring", zap.Error(err))
+			return nil
+		}
 		return errors.Wrap(err, "failed to write tuple to OpenFGA")
 	}
 	return nil

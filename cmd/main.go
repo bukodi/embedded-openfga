@@ -306,7 +306,7 @@ func main() {
 			Object:   "document:" + objectID,
 			Relation: relation,
 			User:     "user:" + userID,
-		}})
+		}}, true) // ignore existing tuples
 		if err != nil {
 			fmt.Println("Error writing tuple:", err)
 			c.HTML(http.StatusInternalServerError, "error.tmpl", gin.H{
