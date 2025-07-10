@@ -16,6 +16,7 @@ services:
       MODEL_FILE: "/app/model.fga"
       STORE_NAME: "embedded_fga"
       AUTHORIZATION_MODEL_NAME: "default"
+      CACHE_TTL: "5m"
     ports:
       - "8007:8007"
       - "9001:9001"

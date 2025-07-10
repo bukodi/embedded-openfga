@@ -33,17 +33,17 @@ type Tuple struct {
 }
 
 type OpenFGAServer struct {
-	Server                 *server.Server
-	StoreName              string `validate:"required"`
-	StoreID                string
-	AuthorizationModelID   string
-	AuthorizationModelName string        `validate:"required"`
-	Logger                 *zap.Logger   `validate:"required"`
-	InitialTuples          []Tuple       `validate:"min=1,dive,required"`
-	ModelFile              string        `validate:"required,file"`
-	dataStoreURI           string        `validate:"required,url"`
-	MaxEvaluationCost      int           `validate:"gte=0"` // This is a global setting, use wisely
-	CacheTTL               time.Duration `validate:"required"`
+	Server                 *server.Server // reference to the OpenFGA server instance
+	StoreName              string         `validate:"required"` // Human-readable name of the store, used for identification. OpenFGA works with storeIDs but we use the name to look it up at startupl;
+	StoreID                string         // StoreID is the unique identifier for the store in OpenFGA, it is used to reference the store in API calls
+	AuthorizationModelID   string         // AuthorizationModelID is the unique identifier for the authorization model in OpenFGA, it is used to reference the model in API calls
+	AuthorizationModelName string         `validate:"required"`            // AuthorizationModelName is the human-readable name of the authorization model, used for identification
+	Logger                 *zap.Logger    `validate:"required"`            // Logger is the logger instance used for logging in the OpenFGA server, I like zap!
+	InitialTuples          []Tuple        `validate:"min=1,dive,required"` // InitialTuples is a list of tuples to be written to OpenFGA at startup, this is used to initialize the store with some data
+	ModelFile              string         `validate:"required,file"`       // ModelFile is the path to the OpenFGA model file, it is used to define the authorization model in OpenFGA
+	dataStoreURI           string         `validate:"required,url"`        // dataStoreURI is the URI of the PostgreSQL datastore, it is used to connect to the database
+	MaxEvaluationCost      int            `validate:"gte=0"`               // This is a global setting, use wisely
+	CacheTTL               time.Duration  `validate:"required"`            // CacheTTL is the time-to-live for the cache, used to control how long cached data is valid (default is 10 minutes)
 }
 
 type OpenFGAOption func(*OpenFGAServer) error
@@ -114,6 +114,23 @@ func WithCacheTTL(ttl time.Duration) OpenFGAOption {
 			return errors.New("cache TTL must be greater than or equal to 0")
 		}
 		fga.CacheTTL = ttl
+		return nil
+	}
+}
+
+func WithCacheTTLString(ttl string) OpenFGAOption {
+	return func(fga *OpenFGAServer) error {
+		if ttl == "" {
+			return nil // we ignore empty TTLs, use the default value
+		}
+		parsedTTL, err := time.ParseDuration(ttl)
+		if err != nil {
+			return errors.Wrap(err, "failed to parse cache TTL duration")
+		}
+		if parsedTTL < 0 {
+			return errors.New("cache TTL must be greater than or equal to 0")
+		}
+		fga.CacheTTL = parsedTTL
 		return nil
 	}
 }
@@ -248,7 +265,7 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 			StoreId:         fga.StoreID,
 			SchemaVersion:   model.GetSchemaVersion(),
 			TypeDefinitions: model.GetTypeDefinitions(),
-			Conditions:      model.GetConditions(),
+			Conditions:      model.GetConditions(), // in this demo we don't use conditions, but you can add them and use them in your model
 		})
 		if err != nil {
 			fga.Logger.Error("Failed to write authorization model", zap.Error(err))

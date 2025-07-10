@@ -82,11 +82,15 @@ func main() {
 		WithStoreName(os.Getenv("STORE_NAME")),
 		WithAuthorizationModelName(os.Getenv("AUTHORIZATION_MODEL_NAME")),
 		WithLogger(logger),
+		WithCacheTTLString(os.Getenv("CACHE_TTL")),
 	)
 	if err != nil {
 		fmt.Println("Failed to initialize OpenFGA server:", err)
 		return
 	}
+	defer func() {
+		_ = openFgaServer.Close()
+	}()
 
 	r := gin.Default()
 	r.LoadHTMLGlob("templates/*")
