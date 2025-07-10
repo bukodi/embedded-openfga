@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
-	"github.com/openfga/openfga/pkg/tuple"
+	"github.com/pkg/errors"
+	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 	"net/http"
@@ -41,7 +41,12 @@ func getUserEmails(c *gin.Context, accessToken string) ([]Email, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			fmt.Println("Error closing response body:", err)
+		}
+	}()
 
 	var emails []Email
 	if err := json.NewDecoder(resp.Body).Decode(&emails); err != nil {
@@ -51,7 +56,6 @@ func getUserEmails(c *gin.Context, accessToken string) ([]Email, error) {
 }
 
 func main() {
-
 	mockServer := mockOAuthServer()
 	defer mockServer.Close()
 
@@ -60,7 +64,25 @@ func main() {
 		TokenURL: mockServer.URL + "/token",
 	}
 
-	openFgaServer, err := InitOpenFGA()
+	if os.Getenv("INITIAL_TUPLES") == "" {
+		panic("INITIAL_TUPLES environment variable is not set")
+	}
+	var tuples []Tuple
+	if err := json.Unmarshal([]byte(os.Getenv("INITIAL_TUPLES")), &tuples); err != nil {
+		panic(errors.Wrap(err, "failed to unmarshal INITIAL_TUPLES environment variable"))
+	}
+	logger, err := zap.NewDevelopment(zap.IncreaseLevel(zap.DebugLevel))
+	if err != nil {
+		panic(errors.Wrap(err, "failed to initialize zap logger"))
+	}
+	openFgaServer, err := NewOpenFGA(
+		os.Getenv("DATASTORE_URI"),
+		WithInitialTuples(tuples),
+		WithModelFile(os.Getenv("MODEL_FILE")),
+		WithStoreName(os.Getenv("STORE_NAME")),
+		WithAuthorizationModelName(os.Getenv("AUTHORIZATION_MODEL_NAME")),
+		WithLogger(logger),
+	)
 	if err != nil {
 		fmt.Println("Failed to initialize OpenFGA server:", err)
 		return
@@ -109,6 +131,7 @@ func main() {
 	})
 
 	r.GET("/documents", func(c *gin.Context) {
+		// allow all logged-in users to view documents
 		userEmail, err := c.Cookie("user")
 		if err != nil {
 			fmt.Println("Error retrieving user cookie:", err)
@@ -138,12 +161,8 @@ func main() {
 			return
 		}
 		// Policy Decision Point (PDP) check
-		fmt.Println("document:"+docID, "view", "user:"+userEmail)
-		v, err1 := openFgaServer.Server.Check(context.Background(), &openfgav1.CheckRequest{
-			StoreId:              openFgaServer.StoreID,
-			AuthorizationModelId: openFgaServer.AuthorizationModelId,
-			TupleKey:             tuple.NewCheckRequestTupleKey("document:"+docID, "viewer", "user:"+userEmail),
-		})
+
+		allowed, err1 := openFgaServer.Check(c.Request.Context(), Tuple{Object: "document:" + docID, Relation: "viewer", User: "user:" + userEmail})
 
 		// Policy Enforcement Point (PEP) check
 		if err1 != nil {
@@ -154,7 +173,7 @@ func main() {
 			})
 			return
 		}
-		if !v.GetAllowed() {
+		if !allowed {
 			c.HTML(http.StatusUnauthorized, "auth-error.tmpl", gin.H{
 				"title":   "Authentication Error",
 				"message": fmt.Sprintf("User %s is not allowed to view document %s", userEmail, docID),
@@ -180,11 +199,7 @@ func main() {
 			return
 		}
 		// Policy Decision Point (PDP) check
-		v, err1 := openFgaServer.Server.Check(context.Background(), &openfgav1.CheckRequest{
-			StoreId:              openFgaServer.StoreID,
-			AuthorizationModelId: openFgaServer.AuthorizationModelId,
-			TupleKey:             tuple.NewCheckRequestTupleKey("document:"+docID, "editor", "user:"+userEmail),
-		})
+		allowed, err1 := openFgaServer.Check(c.Request.Context(), Tuple{Object: "document:" + docID, Relation: "editor", User: "user:" + userEmail})
 
 		// Policy Enforcement Point (PEP) check
 		if err1 != nil {
@@ -195,7 +210,7 @@ func main() {
 			})
 			return
 		}
-		if !v.GetAllowed() {
+		if !allowed {
 			c.HTML(http.StatusUnauthorized, "auth-error.tmpl", gin.H{
 				"title":   "Authentication Error",
 				"message": fmt.Sprintf("User %s is not allowed to view document %s", userEmail, docID),
@@ -226,11 +241,8 @@ func main() {
 			return
 		}
 		// Policy Decision Point (PDP) check
-		v, err1 := openFgaServer.Server.Check(context.Background(), &openfgav1.CheckRequest{
-			StoreId:              openFgaServer.StoreID,
-			AuthorizationModelId: openFgaServer.AuthorizationModelId,
-			TupleKey:             tuple.NewCheckRequestTupleKey("app:auth", "admin", "user:"+userEmail),
-		})
+
+		allowed, err1 := openFgaServer.Check(c.Request.Context(), Tuple{Object: "app:auth", Relation: "admin", User: "user:" + userEmail})
 		// Policy Enforcement Point (PEP) check
 		if err1 != nil {
 			fmt.Println("user:"+userEmail, "err:", err1)
@@ -240,7 +252,7 @@ func main() {
 			})
 			return
 		}
-		if !v.GetAllowed() {
+		if !allowed {
 			c.HTML(http.StatusUnauthorized, "auth-error.tmpl", gin.H{
 				"title":   "Authentication Error",
 				"message": fmt.Sprintf("User %s is not allowed to access the admin panel", userEmail),
@@ -268,11 +280,7 @@ func main() {
 			return
 		}
 		// Policy Decision Point (PDP) check
-		v, err1 := openFgaServer.Server.Check(c.Request.Context(), &openfgav1.CheckRequest{
-			StoreId:              openFgaServer.StoreID,
-			AuthorizationModelId: openFgaServer.AuthorizationModelId,
-			TupleKey:             tuple.NewCheckRequestTupleKey("app:auth", "admin", "user:"+userEmail),
-		})
+		allowed, err1 := openFgaServer.Check(c.Request.Context(), Tuple{Object: "app:auth", Relation: "admin", User: "user:" + userEmail})
 		// Policy Enforcement Point (PEP) check
 		if err1 != nil {
 			fmt.Println("user:"+userEmail, "err:", err1)
@@ -282,7 +290,7 @@ func main() {
 			})
 			return
 		}
-		if !v.GetAllowed() {
+		if !allowed {
 			c.HTML(http.StatusUnauthorized, "auth-error.tmpl", gin.H{
 				"title":   "Authentication Error",
 				"message": fmt.Sprintf("User %s is not allowed to access the admin panel", userEmail),
@@ -294,15 +302,11 @@ func main() {
 		objectID := c.PostForm("document")
 		relation := c.PostForm("relation")
 		userID := c.PostForm("user")
-		_, err = openFgaServer.Server.Write(c.Request.Context(), &openfgav1.WriteRequest{
-			StoreId:              openFgaServer.StoreID,
-			AuthorizationModelId: openFgaServer.AuthorizationModelId,
-			Writes: &openfgav1.WriteRequestWrites{
-				TupleKeys: []*openfgav1.TupleKey{
-					tuple.NewTupleKey("document:"+objectID, relation, "user:"+userID),
-				},
-			},
-		})
+		err = openFgaServer.Write(c.Request.Context(), []Tuple{{
+			Object:   "document:" + objectID,
+			Relation: relation,
+			User:     "user:" + userID,
+		}})
 		if err != nil {
 			fmt.Println("Error writing tuple:", err)
 			c.HTML(http.StatusInternalServerError, "error.tmpl", gin.H{
@@ -313,5 +317,8 @@ func main() {
 		}
 		c.Redirect(http.StatusSeeOther, "/documents")
 	})
-	r.Run(":8007")
+	err = r.Run(":8007")
+	if err != nil {
+		panic(err)
+	}
 }

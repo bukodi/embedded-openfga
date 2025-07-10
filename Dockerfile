@@ -10,5 +10,7 @@ FROM debian:bookworm-slim
 COPY --from=builder /app/embd-openfga /app/embd-openfga
 WORKDIR /app
 COPY ./templates /app/templates
+COPY ./model.fga /app/model.fga
+
 RUN chmod +x /app/embd-openfga
 ENTRYPOINT ["/app/embd-openfga"]

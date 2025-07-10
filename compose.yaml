@@ -13,6 +13,9 @@ services:
           {"object": "document:2", "relation": "viewer", "user": "user:another@example.com"},
           {"object": "app:auth", "relation": "admin", "user": "user:test@example.com"}
         ]
+      MODEL_FILE: "/app/model.fga"
+      STORE_NAME: "embedded_fga"
+      AUTHORIZATION_MODEL_NAME: "default"
     ports:
       - "8007:8007"
       - "9001:9001"

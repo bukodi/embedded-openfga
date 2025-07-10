@@ -17,7 +17,7 @@ func mockOAuthServer() *httptest.Server {
 		redirectUrl := r.FormValue("redirect_uri")
 		state := r.FormValue("state")
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<html><body>
+		_, _ = w.Write([]byte(`<html><body>
 <form action="/authorize-user" method="post">
   <label for="email">Authenticate as:</label>
   <select name="email" id="email">
@@ -41,14 +41,14 @@ func mockOAuthServer() *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		code := r.FormValue("code")
 		if strings.Contains(code, "test@example.com") {
-			w.Write([]byte(`{
+			_, _ = w.Write([]byte(`{
 			"access_token": "mock-access-token:test@example.com",
 			"token_type": "bearer",
 			"expires_in": 3600,
 			"scope": "user:email"
 		}`))
 		} else if strings.Contains(code, "another@example.com") {
-			w.Write([]byte(`{
+			_, _ = w.Write([]byte(`{
 			"access_token": "mock-access-token:another@example.com",
 			"token_type": "bearer",
 			"expires_in": 3600,
