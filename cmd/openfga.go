@@ -146,14 +146,14 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 			return nil, errors.Wrap(err, "failed to apply OpenFGA option")
 		}
 	}
-
+	// 1. Validate server options
 	v := validator.New()
 	err := v.Struct(fga)
 	if err != nil {
 		return nil, errors.Wrap(err, "OpenFGA server configuration validation failed")
 	}
 
-	// Configure PostgreSQL datastore
+	// 2. Setup PostgreSQL datastore
 	confg := sqlcommon.NewConfig()
 	pgConfig, err := postgres.New(
 		fga.dataStoreURI,
@@ -180,6 +180,8 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 			return nil, errors.New("timed out waiting for PostgreSQL datastore to be ready")
 		}
 	}
+
+	// 3. Run migration
 	err = Migrate()
 	if err != nil {
 		fga.Logger.Error("Failed to run migration", zap.Error(err))
@@ -189,7 +191,7 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 	}
 
 	viper.Set("maxConditionEvaluationCost", fga.MaxEvaluationCost) // use this wisely, it is a global setting and can have performance implications for slower modelsl
-	// Initialize embedded OpenFGA
+	// 4. Initialize OpenFGA server
 	fgaServer, err := server.NewServerWithOpts(
 		server.WithDatastore(pgConfig),
 		server.WithLogger(&logger.ZapLogger{Logger: fga.Logger.With(zap.String("service", "authz"))}),
@@ -223,6 +225,8 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 
 	fga.Server = fgaServer
 
+	// 5. Create or lookup the store
+
 	stores, err := fga.Server.ListStores(context.Background(), &openfgav1.ListStoresRequest{Name: fga.StoreName})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to list stores")
@@ -242,7 +246,7 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 		fga.Logger.Info("Store found", zap.String("id", fga.StoreID))
 	}
 
-	// Read the model from the file
+	// 6. Create or lookup the authorization model
 	modelData, err := os.ReadFile(fga.ModelFile)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to read model file")
@@ -278,6 +282,7 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 		fga.Logger.Debug("Authorization model found", zap.String("model_id", fga.AuthorizationModelID))
 	}
 
+	// 7. Import initial tuples to OpenFGA
 	err = fga.Write(context.Background(), fga.InitialTuples, true) // we ignore existing tuples
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to write tuples to OpenFGA")
