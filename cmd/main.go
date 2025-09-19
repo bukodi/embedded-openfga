@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
+
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
-	"net/http"
-	"os"
 )
 
 var (
@@ -75,6 +76,7 @@ func main() {
 	if err != nil {
 		panic(errors.Wrap(err, "failed to initialize zap logger"))
 	}
+	logger.Info("Development logger initialized")
 	openFgaServer, err := NewOpenFGA(
 		os.Getenv("DATASTORE_URI"),
 		WithInitialTuples(tuples),
@@ -85,7 +87,7 @@ func main() {
 		WithCacheTTLString(os.Getenv("CACHE_TTL")),
 	)
 	if err != nil {
-		fmt.Println("Failed to initialize OpenFGA server:", err)
+		fmt.Printf("Failed to initialize OpenFGA server:%+v\n", err)
 		return
 	}
 	defer func() {

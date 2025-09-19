@@ -2,28 +2,43 @@ package main
 
 import (
 	"context"
+	"os"
+	"strings"
+	"time"
+
 	"github.com/go-playground/validator/v10"
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	parser "github.com/openfga/language/pkg/go/transformer"
-	"github.com/openfga/openfga/cmd/migrate"
 	"github.com/openfga/openfga/pkg/logger"
 	"github.com/openfga/openfga/pkg/server"
+	"github.com/openfga/openfga/pkg/storage/migrate"
 	"github.com/openfga/openfga/pkg/storage/postgres"
 	"github.com/openfga/openfga/pkg/storage/sqlcommon"
 	"github.com/openfga/openfga/pkg/tuple"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
-	"os"
-	"strings"
-	"time"
 )
 
-func Migrate() error {
+/*func Migratex() error {
 	migrateCommand := migrate.NewMigrateCommand()
 	migrateCommand.SetArgs([]string{"--datastore-engine", "postgres", "--datastore-uri", os.Getenv("DATASTORE_URI")})
 	err := migrateCommand.Execute()
 	return err
+}*/
+
+func Migrate(ctx context.Context, datastoreURI string) error {
+	// Use the programmatic migrations runner instead of the CLI command to ensure
+	// migrations run reliably in-process and create goose_db_version and all tables.
+	//
+	// The migrations package runs the embedded Goose migrations for the given engine.
+	// Engine is "postgres" for a Postgres datastore.
+	return migrate.RunMigrations(migrate.MigrationConfig{
+		Engine:        "postgres",
+		URI:           datastoreURI,
+		Verbose:       true,
+		TargetVersion: 6,
+	})
 }
 
 type Tuple struct {
@@ -172,6 +187,14 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 		if r.IsReady {
 			fga.Logger.Debug("PostgreSQL datastore is ready")
 			break
+		} else if strings.Contains(r.Message, "datastore requires migrations") {
+			// 3. Run migration
+			fga.Logger.Warn("PostgreSQL datastore requires migrations, running them now...")
+			err = Migrate(context.Background(), fga.dataStoreURI)
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to run migrations")
+			}
+			fga.Logger.Info("PostgreSQL datastore migrations completed")
 		}
 		select {
 		case <-time.After(1 * time.Second):
@@ -182,13 +205,6 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 	}
 
 	// 3. Run migration
-	err = Migrate()
-	if err != nil {
-		fga.Logger.Error("Failed to run migration", zap.Error(err))
-		return nil, errors.Wrap(err, "failed to run migration")
-	} else {
-		fga.Logger.Info("Migration completed")
-	}
 
 	viper.Set("maxConditionEvaluationCost", fga.MaxEvaluationCost) // use this wisely, it is a global setting and can have performance implications for slower modelsl
 	// 4. Initialize OpenFGA server
