@@ -94,7 +94,7 @@ func mockOAuthServer() *httptest.Server {
 	})
 
 	server := httptest.NewUnstartedServer(mux)
-	listener, _ := net.Listen("tcp", ":9001")
+	listener, _ := net.Listen("tcp", "localhost:9001")
 	server.Listener = listener
 	server.Start()
 	return server

@@ -1,9 +1,12 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestCmgLine(t *testing.T) {
-	t.Setenv("DATASTORE_URI", "postgres://postgres:pass123@localhost:5432/postgres")
+	t.Setenv("DATASTORE_URI", filepath.Join(t.TempDir(), "openfga.db"))
 	t.Setenv("INITIAL_TUPLES", `
 	[
 	{"object": "document:1", "relation": "editor", "user": "user:test@example.com"},

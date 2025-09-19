@@ -12,29 +12,21 @@ import (
 	"github.com/openfga/openfga/pkg/logger"
 	"github.com/openfga/openfga/pkg/server"
 	"github.com/openfga/openfga/pkg/storage/migrate"
-	"github.com/openfga/openfga/pkg/storage/postgres"
 	"github.com/openfga/openfga/pkg/storage/sqlcommon"
+	"github.com/openfga/openfga/pkg/storage/sqlite"
 	"github.com/openfga/openfga/pkg/tuple"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 )
 
-/*func Migratex() error {
-	migrateCommand := migrate.NewMigrateCommand()
-	migrateCommand.SetArgs([]string{"--datastore-engine", "postgres", "--datastore-uri", os.Getenv("DATASTORE_URI")})
-	err := migrateCommand.Execute()
-	return err
-}*/
-
 func Migrate(ctx context.Context, datastoreURI string) error {
 	// Use the programmatic migrations runner instead of the CLI command to ensure
 	// migrations run reliably in-process and create goose_db_version and all tables.
 	//
 	// The migrations package runs the embedded Goose migrations for the given engine.
-	// Engine is "postgres" for a Postgres datastore.
 	return migrate.RunMigrations(migrate.MigrationConfig{
-		Engine:        "postgres",
+		Engine:        "sqlite",
 		URI:           datastoreURI,
 		Verbose:       true,
 		TargetVersion: 6,
@@ -56,7 +48,7 @@ type OpenFGAServer struct {
 	Logger                 *zap.Logger    `validate:"required"`            // Logger is the logger instance used for logging in the OpenFGA server, I like zap!
 	InitialTuples          []Tuple        `validate:"min=1,dive,required"` // InitialTuples is a list of tuples to be written to OpenFGA at startup, this is used to initialize the store with some data
 	ModelFile              string         `validate:"required,file"`       // ModelFile is the path to the OpenFGA model file, it is used to define the authorization model in OpenFGA
-	dataStoreURI           string         `validate:"required,url"`        // dataStoreURI is the URI of the PostgreSQL datastore, it is used to connect to the database
+	dataStoreURI           string         `validate:"required,url"`        // dataStoreURI is the URI of the datastore, it is used to connect to the database
 	MaxEvaluationCost      int            `validate:"gte=0"`               // This is a global setting, use wisely
 	CacheTTL               time.Duration  `validate:"required"`            // CacheTTL is the time-to-live for the cache, used to control how long cached data is valid (default is 10 minutes)
 }
@@ -168,39 +160,39 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 		return nil, errors.Wrap(err, "OpenFGA server configuration validation failed")
 	}
 
-	// 2. Setup PostgreSQL datastore
+	// 2. Setup datastore
 	confg := sqlcommon.NewConfig()
-	pgConfig, err := postgres.New(
+	pgConfig, err := sqlite.New(
 		fga.dataStoreURI,
 		confg,
 	)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to create PostgreSQL datastore")
+		return nil, errors.Wrap(err, "failed to create datastore")
 	}
 
 	timeout := time.After(30 * time.Second)
 	for {
 		r, err := pgConfig.IsReady(context.Background())
 		if err != nil {
-			return nil, errors.Wrap(err, "error waiting for PostgreSQL datastore to be ready")
+			return nil, errors.Wrap(err, "error waiting for datastore to be ready")
 		}
 		if r.IsReady {
-			fga.Logger.Debug("PostgreSQL datastore is ready")
+			fga.Logger.Debug("datastore is ready")
 			break
 		} else if strings.Contains(r.Message, "datastore requires migrations") {
 			// 3. Run migration
-			fga.Logger.Warn("PostgreSQL datastore requires migrations, running them now...")
+			fga.Logger.Warn("datastore requires migrations, running them now...")
 			err = Migrate(context.Background(), fga.dataStoreURI)
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to run migrations")
 			}
-			fga.Logger.Info("PostgreSQL datastore migrations completed")
+			fga.Logger.Info("datastore migrations completed")
 		}
 		select {
 		case <-time.After(1 * time.Second):
-			fga.Logger.Debug("Waiting for PostgreSQL datastore to be ready...", zap.String("message", r.Message))
+			fga.Logger.Debug("Waiting for datastore to be ready...", zap.String("message", r.Message))
 		case <-timeout:
-			return nil, errors.New("timed out waiting for PostgreSQL datastore to be ready")
+			return nil, errors.New("timed out waiting for datastore to be ready")
 		}
 	}
 
