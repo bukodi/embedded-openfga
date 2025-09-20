@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -9,7 +10,6 @@ import (
 	"github.com/go-playground/validator/v10"
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	parser "github.com/openfga/language/pkg/go/transformer"
-	"github.com/openfga/openfga/pkg/logger"
 	"github.com/openfga/openfga/pkg/server"
 	"github.com/openfga/openfga/pkg/storage/migrate"
 	"github.com/openfga/openfga/pkg/storage/sqlcommon"
@@ -17,7 +17,6 @@ import (
 	"github.com/openfga/openfga/pkg/tuple"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
-	"go.uber.org/zap"
 )
 
 func Migrate(ctx context.Context, datastoreURI string) error {
@@ -45,7 +44,6 @@ type OpenFGAServer struct {
 	StoreID                string         // StoreID is the unique identifier for the store in OpenFGA, it is used to reference the store in API calls
 	AuthorizationModelID   string         // AuthorizationModelID is the unique identifier for the authorization model in OpenFGA, it is used to reference the model in API calls
 	AuthorizationModelName string         `validate:"required"`            // AuthorizationModelName is the human-readable name of the authorization model, used for identification
-	Logger                 *zap.Logger    `validate:"required"`            // Logger is the logger instance used for logging in the OpenFGA server, I like zap!
 	InitialTuples          []Tuple        `validate:"min=1,dive,required"` // InitialTuples is a list of tuples to be written to OpenFGA at startup, this is used to initialize the store with some data
 	ModelFile              string         `validate:"required,file"`       // ModelFile is the path to the OpenFGA model file, it is used to define the authorization model in OpenFGA
 	dataStoreURI           string         `validate:"required,url"`        // dataStoreURI is the URI of the datastore, it is used to connect to the database
@@ -54,16 +52,6 @@ type OpenFGAServer struct {
 }
 
 type OpenFGAOption func(*OpenFGAServer) error
-
-func WithLogger(logger *zap.Logger) OpenFGAOption {
-	return func(fga *OpenFGAServer) error {
-		if logger == nil {
-			return errors.New("logger cannot be nil")
-		}
-		fga.Logger = logger
-		return nil
-	}
-}
 
 func WithInitialTuples(tuples []Tuple) OpenFGAOption {
 	return func(fga *OpenFGAServer) error {
@@ -177,20 +165,20 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 			return nil, errors.Wrap(err, "error waiting for datastore to be ready")
 		}
 		if r.IsReady {
-			fga.Logger.Debug("datastore is ready")
+			slog.Debug("datastore is ready")
 			break
 		} else if strings.Contains(r.Message, "datastore requires migrations") {
 			// 3. Run migration
-			fga.Logger.Warn("datastore requires migrations, running them now...")
+			slog.Warn("datastore requires migrations, running them now...")
 			err = Migrate(context.Background(), fga.dataStoreURI)
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to run migrations")
 			}
-			fga.Logger.Info("datastore migrations completed")
+			slog.Info("datastore migrations completed")
 		}
 		select {
 		case <-time.After(1 * time.Second):
-			fga.Logger.Debug("Waiting for datastore to be ready...", zap.String("message", r.Message))
+			slog.Debug("Waiting for datastore to be ready...", slog.String("message", r.Message))
 		case <-timeout:
 			return nil, errors.New("timed out waiting for datastore to be ready")
 		}
@@ -200,14 +188,19 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 
 	viper.Set("maxConditionEvaluationCost", fga.MaxEvaluationCost) // use this wisely, it is a global setting and can have performance implications for slower modelsl
 	// 4. Initialize OpenFGA server
+	l := zap2Slog{
+		slog: slog.Default().Handler(),
+	}
 	fgaServer, err := server.NewServerWithOpts(
 		server.WithDatastore(pgConfig),
-		server.WithLogger(&logger.ZapLogger{Logger: fga.Logger.With(zap.String("service", "authz"))}),
+		server.WithLogger(l),
 		server.WithCacheControllerEnabled(true),
 		server.WithCacheControllerTTL(fga.CacheTTL),
 		server.WithCheckQueryCacheEnabled(true),
 		server.WithCheckQueryCacheTTL(fga.CacheTTL),
 		server.WithCheckIteratorCacheEnabled(true),
+		server.WithMaxChecksPerBatchCheck(5000),
+		server.WithContextPropagationToDatastore(true),
 		server.WithMaxChecksPerBatchCheck(5000),
 	)
 	if err != nil {
@@ -220,12 +213,12 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 			return nil, errors.Wrap(err, "error checking OpenFGA server readiness")
 		}
 		if isReady {
-			fga.Logger.Debug("OpenFGA server is ready")
+			slog.Debug("OpenFGA server is ready")
 			break
 		}
 		select {
 		case <-time.After(1 * time.Second):
-			fga.Logger.Debug("Waiting for OpenFGA server to be ready...")
+			slog.Debug("Waiting for OpenFGA server to be ready...")
 		case <-timeout:
 			return nil, errors.New("timed out waiting for OpenFGA server to be ready")
 		}
@@ -244,14 +237,14 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 			Name: fga.StoreName,
 		})
 		if err != nil {
-			fga.Logger.Error("Failed to create store", zap.Error(err))
+			slog.Error("Failed to create store", slog.Any("err", err))
 			return nil, errors.Wrap(err, "failed to create store")
 		}
 		fga.StoreID = cs.GetId()
-		fga.Logger.Debug("Store created", zap.String("id", fga.StoreID))
+		slog.Debug("Store created", slog.String("id", fga.StoreID))
 	} else {
 		fga.StoreID = stores.Stores[0].GetId()
-		fga.Logger.Info("Store found", zap.String("id", fga.StoreID))
+		slog.Info("Store found", slog.String("id", fga.StoreID))
 	}
 
 	// 6. Create or lookup the authorization model
@@ -280,14 +273,14 @@ func NewOpenFGA(dataStoreURI string, opts ...OpenFGAOption) (*OpenFGAServer, err
 			Conditions:      model.GetConditions(), // in this demo we don't use conditions, but you can add them and use them in your model
 		})
 		if err != nil {
-			fga.Logger.Error("Failed to write authorization model", zap.Error(err))
+			slog.Error("Failed to write authorization model", slog.Any("err", err))
 			return nil, errors.Wrap(err, "failed to write authorization model")
 		}
 		fga.AuthorizationModelID = r.GetAuthorizationModelId()
-		fga.Logger.Debug("Authorization model created", zap.String("model_id", fga.AuthorizationModelID))
+		slog.Debug("Authorization model created", slog.String("model_id", fga.AuthorizationModelID))
 	} else {
 		fga.AuthorizationModelID = models.GetAuthorizationModels()[0].GetId()
-		fga.Logger.Debug("Authorization model found", zap.String("model_id", fga.AuthorizationModelID))
+		slog.Debug("Authorization model found", slog.String("model_id", fga.AuthorizationModelID))
 	}
 
 	// 7. Import initial tuples to OpenFGA
@@ -329,7 +322,7 @@ func (fga *OpenFGAServer) Write(ctx context.Context, t []Tuple, ignoreExisting b
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") && ignoreExisting { // if a batch write fails due to one exising pair the others won't be written, use this carefully
-			fga.Logger.Info("Tuple already exists, ignoring", zap.Error(err))
+			slog.Info("Tuple already exists, ignoring", slog.Any("err", err))
 			return nil
 		}
 		return errors.Wrap(err, "failed to write tuple to OpenFGA")

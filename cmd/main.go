@@ -9,7 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
-	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 )
@@ -72,18 +71,12 @@ func main() {
 	if err := json.Unmarshal([]byte(os.Getenv("INITIAL_TUPLES")), &tuples); err != nil {
 		panic(errors.Wrap(err, "failed to unmarshal INITIAL_TUPLES environment variable"))
 	}
-	logger, err := zap.NewDevelopment(zap.IncreaseLevel(zap.DebugLevel))
-	if err != nil {
-		panic(errors.Wrap(err, "failed to initialize zap logger"))
-	}
-	logger.Info("Development logger initialized")
 	openFgaServer, err := NewOpenFGA(
 		os.Getenv("DATASTORE_URI"),
 		WithInitialTuples(tuples),
 		WithModelFile(os.Getenv("MODEL_FILE")),
 		WithStoreName(os.Getenv("STORE_NAME")),
 		WithAuthorizationModelName(os.Getenv("AUTHORIZATION_MODEL_NAME")),
-		WithLogger(logger),
 		WithCacheTTLString(os.Getenv("CACHE_TTL")),
 	)
 	if err != nil {
